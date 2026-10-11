@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#C1561A">
+<title>Anfitrião · Recreação</title>
+<link rel="icon" href="icon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="estilo.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="config.js"></script>
+<script src="comum.js"></script>
+</head>
+<body>
+<header>
+  <div class="cong">Congregação Sul de Marialva</div>
+  <div class="rec">Recreação</div>
+  <span class="badge">👑 ANFITRIÃO</span>
+</header>
+<main id="app"><div class="wait"><span class="bounce">⏳</span><br>Conectando…</div></main>
+
+<script>
+const H={panel:'jogo',sala:{},jog:{},C:null,sel:[],answered:0,ending:false,key:null,respRef:null,saveT:null};
+const LINK=location.origin+location.pathname.replace(/anfitriao\.html$/,'');
+const G=()=>norm(H.sala.jogo||H.C);
+const seq=()=>arr(H.sala.seq);
+const it=()=>seq()[H.sala.step]||{};
+const curQ=()=>qFrom(G(),it());
+
+initFirebase().then(async()=>{
+  const c=(await ref('conteudo').get()).val();
+  H.C=c?norm(c):norm(DEFAULT_CONTENT);
+  if(!c)ref('conteudo').set(H.C);
+  ref('sala').on('value',s=>{H.sala=s.val()||{};onSala()});
+  ref('jogadores').on('value',s=>{H.jog=s.val()||{};if(H.panel==='jogo')render()});
+  setInterval(loop,250);
+  render();
+}).catch(showError);
+
+function onSala(){
+  const k=H.sala.gameId+'_'+H.sala.step;
+  if(k!==H.key){H.key=k;H.ending=false;H.sel=[];H.answered=0;
+    if(H.respRef)H.respRef.off();H.respRef=null;
+    if(H.sala.gameId!=null&&H.sala.step!=null){
+      H.respRef=ref(`respostas/${H.sala.gameId}/${H.sala.step}`);
+      H.respRef.on('value',s=>{H.answered=s.numChildren();const a=$('#ansc');if(a)a.textContent=H.answered})}}
+  if(H.panel==='jogo')render();
+}
+function loop(){
+  if(H.sala.aberta&&H.sala.phase==='pergunta'){
+    const l=timeLeft(H.sala);tickTimers(l,H.sala.total);
+    if(l<=0&&!H.ending)endQ();
+  }
+}
+
+/* ---------- ações ---------- */
+function abrir(){ref('sala').update({aberta:true,phase:'lobby'})}
+function fechar(){if(!confirm('Fechar a sala? Todos os participantes saem e o placar é apagado.'))return;
+  ref().update({sala:{aberta:false,phase:'fechada'},jogadores:null,respostas:null})}
+function copyLink(){navigator.clipboard.writeText(LINK).then(()=>alert('Link copiado!'),()=>prompt('Copie o link:',LINK))}
+function shareWa(){window.open('https://wa.me/?text='+encodeURIComponent('Entre no jogo da Recreação 🎉 '+LINK),'_blank')}
+function iniciar(){
+  const j=norm(H.C),sq=buildSeq(j);
+  if(sq.length<2)return alert('Cadastre pelo menos uma pergunta em "Temas e perguntas".');
+  if(!playersList(H.jog).length&&!confirm('Ninguém entrou na sala ainda. Iniciar mesmo assim?'))return;
+  const up={'sala/jogo':j,'sala/seq':sq,'sala/gameId':Date.now(),'sala/ja':null,'respostas':null};
+  Object.keys(H.jog).forEach(id=>up[`jogadores/${id}/pts`]=0);
+  ref().update(up).then(()=>enterStep(0,sq,j));
+}
+function enterStep(step,sq=seq(),j=G()){
+  const t=sq[step]||{t:'fim'};const p={step,called:null,resultado:null,endsAt:null,total:null};
+  if(t.t==='tema')p.phase='tema';
+  else if(t.t==='q'){const q=qFrom(j,t);p.phase='pergunta';p.total=q.tempo;p.endsAt=now()+q.tempo*1000}
+  else if(t.t==='livro')p.phase='livroTema';
+  else p.phase='ranking';
+  ref('sala').update(p);
+}
+function next(){enterStep((H.sala.step||0)+1)}
+function setPhase(ph){ref('sala').update({phase:ph})}
+async function endQ(){
+  if(H.ending)return;H.ending=true;
+  const s=H.sala,q=curQ();if(!q)return;
+  const r=(await ref(`respostas/${s.gameId}/${s.step}`).get()).val()||{};
+  const counts=[0,0,0,0],ganhos={},up={};
+  Object.entries(r).forEach(([pid,a])=>{
+    if(!a||a.op==null||a.op<0||a.op>3)return;counts[a.op]++;
+    if(a.op===q.certa&&H.jog[pid]&&H.jog[pid].nome){
+      const g=100+Math.round(50*Math.min(1,Math.max(0,(a.rest||0)/((s.total||20)*1000))));
+      ganhos[pid]=g;up[`jogadores/${pid}/pts`]=firebase.database.ServerValue.increment(g)}});
+  up['sala/phase']='resultado';up['sala/resultado']={counts,ganhos};up['sala/endsAt']=null;
+  ref().update(up);
+}
+function toggleSel(pid){const k=H.sel.indexOf(pid);
+  if(k>=0)H.sel.splice(k,1);else if(H.sel.length<4)H.sel.push(pid);render()}
+function sortear(){const ja=H.sala.ja||{},on=playersList(H.jog).filter(p=>p.online).map(p=>p.id);
+  let pick=shuffle(on.filter(id=>!ja[id])).slice(0,4);
+  if(pick.length<4)pick=pick.concat(shuffle(on.filter(id=>!pick.includes(id))).slice(0,4-pick.length));
+  H.sel=pick;render()}
+function confirmSel(){if(!H.sel.length)return;
+  const up={'sala/phase':'chamados','sala/called':H.sel.map(pid=>({pid,nome:(H.jog[pid]||{}).nome||'?'}))};
+  H.sel.forEach(pid=>up[`sala/ja/${pid}`]=true);ref().update(up)}
+function palmas(){setPhase('palmas');clapSound()}
+function toLobby(){ref('sala').update({phase:'lobby',endsAt:null,called:null,resultado:null})}
+function encerrar(){if(confirm('Encerrar a partida e voltar à sala?'))toLobby()}
+
+/* ---------- telas ---------- */
+function chips(selectable){const ja=H.sala.ja||{};const pl=playersList(H.jog).filter(p=>!selectable||p.online);
+  if(!pl.length)return `<div class="muted center" style="margin:12px 0">${selectable?'Ninguém conectado':'Aguardando participantes…'}</div>`;
+  return `<div class="chips">${pl.map(p=>{
+    if(!selectable)return `<span class="chip ${p.online?'':'off'}">${esc(p.nome)}</span>`;
+    const sel=H.sel.includes(p.id),was=ja[p.id];
+    return `<button class="chip ${sel?'sel':was?'was':''}" onclick="toggleSel('${p.id}')">${was?'⭐ ':''}${esc(p.nome)}</button>`}).join('')}</div>`}
+function game(){
+  const s=H.sala,ph=s.aberta?s.phase:'fechada',g=G(),t=it(),q=curQ(),stop=`<button class="stop" onclick="encerrar()">⏹ Encerrar partida</button>`;
+  const online=playersList(H.jog).filter(p=>p.online).length;
+  if(['pergunta','resultado','selecao','chamados'].includes(ph)&&!q)return `<div class="wait">Carregando…</div>`+stop;
+  switch(ph){
+  case'fechada':return `<div class="card center"><div style="font-size:56px">🚪</div><div class="big">A sala está fechada</div><p class="muted" style="font-size:17px">Ao abrir a sala, quem acessar o link dos participantes entra direto — sem código.</p></div><button class="btn" onclick="abrir()">🔓 Abrir sala</button>`;
+  case'tema':return themeHTML(g,t)+`<button class="btn" onclick="next()">Começar sessão ▶</button>`+stop;
+  case'pergunta':{const l=timeLeft(s);
+    return metaBar(g,t)+qBoxHTML(q,timerHTML(l,s.total))+optsHTML(q)+`<div class="info">📱 <b id="ansc">${H.answered}</b> de ${online} responderam</div><button class="btn sec" onclick="endQ()">⏹ Encerrar tempo</button>`+stop}
+  case'resultado':{const res=s.resultado||{},r=ranked(H.jog).slice(0,5);
+    return metaBar(g,t)+qBoxHTML(q)+optsHTML(q,{mode:'result',showCounts:true,counts:arr(res.counts)})+
+    `<div class="card mini" style="margin-top:14px"><div class="lbl" style="margin-bottom:6px">Placar parcial</div>${r.map((x,i)=>`<div class="rk"><span>${i+1}º ${esc(x.nome)}</span><span>${x.pts}</span></div>`).join('')}</div><button class="btn" onclick="next()">${nextLabelFor(seq(),s.step)}</button>`+stop}
+  case'livroTema':return livroCardHTML(g)+`<button class="btn" onclick="setPhase('selecao')">Mostrar pergunta ▶</button>`+stop;
+  case'selecao':return livroBannerHTML(g)+livroQHTML(q)+`<div class="card"><b style="font-size:20px">Escolha até 4 participantes</b><div class="muted" style="font-size:15px;margin-top:4px">⭐ = já foi chamado antes (ainda pode ser escolhido)</div>${chips(true)}<button class="btn sec" onclick="sortear()">🎲 Sortear 4 (prioriza quem não foi chamado)</button></div><button class="btn" ${H.sel.length?'':'disabled'} onclick="confirmSel()">📣 Mostrar escolhidos (${H.sel.length}/4)</button>`+stop;
+  case'chamados':return livroBannerHTML(g)+livroQHTML(q)+namesHTML(s.called)+`<button class="btn" onclick="palmas()">👏 Salva de palmas</button>`+stop;
+  case'palmas':return palmasHTML(s.called)+`<button class="btn" onclick="next()">${nextLabelFor(seq(),s.step)}</button>`+stop;
+  case'ranking':return rankingHTML(H.jog)+`<button class="btn" onclick="iniciar()">🔄 Jogar novamente</button><button class="btn sec" onclick="toLobby()">Voltar à sala</button>`;
+  default:return `<div class="card center"><div class="live">🟢 Sala aberta</div><div class="lbl">Link dos participantes</div><div class="link">${esc(LINK)}</div>
+    <div class="row2"><button class="btn sec" onclick="copyLink()">📋 Copiar</button><button class="btn sec" onclick="shareWa()">💬 WhatsApp</button></div>
+    <div class="lbl" style="margin-top:18px">Na sala (${online})</div>${chips(false)}</div>
+    <button class="btn" onclick="iniciar()">▶ Iniciar jogo</button><button class="btn sec" onclick="fechar()">Fechar sala</button>`;
+  }}
+
+/* ---------- editor ---------- */
+function saveC(){const st=$('#savest');if(st)st.textContent='Salvando…';clearTimeout(H.saveT);
+  H.saveT=setTimeout(()=>ref('conteudo').set(H.C).then(()=>{const e=$('#savest');if(e)e.textContent='✔ Salvo'}),600)}
+function edit(fn,rerender){fn(H.C);saveC();if(rerender)render()}
+const blankQ=()=>N('Nova pergunta',['Opção A','Opção B','Opção C','Opção D'],0);
+function colorRow(cor,code){return `<div class="colors">${COLORS.map(c=>`<button class="sw ${c===cor?'on':''}" style="background:${c}" onclick="edit(C=>{${code}='${c}'},1)"></button>`).join('')}</div>`}
+function qEd(si,qi,q){
+  return `<div class="qed"><div class="edrow"><b>Pergunta ${qi+1}</b><span class="tm">⏱ <input type="number" min="5" max="120" value="${q.tempo}" oninput="edit(C=>C.sessoes[${si}].perguntas[${qi}].tempo=Math.max(5,+this.value||20))"> s <button class="x" onclick="delQ(${si},${qi})">✕</button></span></div>
+  <textarea oninput="edit(C=>C.sessoes[${si}].perguntas[${qi}].texto=this.value)">${esc(q.texto)}</textarea>
+  <label>Opções (marque a certa)</label>
+  ${q.ops.map((o,oi)=>`<div class="oed"><input type="radio" name="c${si}_${qi}" ${q.certa===oi?'checked':''} onchange="edit(C=>C.sessoes[${si}].perguntas[${qi}].certa=${oi})"><span class="dot" style="background:${OPC[oi]}">${SHP[oi]}</span><input value="${esc(o)}" oninput="edit(C=>C.sessoes[${si}].perguntas[${qi}].ops[${oi}]=this.value)"></div>`).join('')}</div>`}
+function delQ(si,qi){const p=H.C.sessoes[si].perguntas;if(p.length<=1)return alert('A sessão precisa de pelo menos 1 pergunta.');if(confirm('Excluir esta pergunta?'))edit(C=>C.sessoes[si].perguntas.splice(qi,1),1)}
+function delSes(si){if(H.C.sessoes.length<=1)return alert('É preciso ter pelo menos 1 sessão.');if(confirm('Excluir esta sessão e todas as perguntas dela?'))edit(C=>C.sessoes.splice(si,1),1)}
+function delL(i){if(confirm('Excluir esta pergunta?'))edit(C=>C.livro.perguntas.splice(i,1),1)}
+function editor(){const C=H.C,L=C.livro;
+  return `<div class="savest" id="savest"></div><div class="hint">💡 As alterações são salvas automaticamente e valem a partir da <b>próxima partida</b>. A cada 4 perguntas entra uma rodada do <b>Livro Aberto</b>.</div>`+
+  C.sessoes.map((s,si)=>`<div class="card ed"><div class="edrow"><span class="sbadge" style="background:${s.cor}">Sessão ${si+1}</span><button class="x" onclick="delSes(${si})">🗑 Excluir</button></div>
+  <label>Tema</label><input value="${esc(s.tema)}" oninput="edit(C=>C.sessoes[${si}].tema=this.value)">
+  <label>Cor do tema</label>${colorRow(s.cor,`C.sessoes[${si}].cor`)}
+  ${s.perguntas.map((q,qi)=>qEd(si,qi,q)).join('')}
+  <button class="add" onclick="edit(C=>C.sessoes[${si}].perguntas.push(blankQ()),1)">+ Pergunta de múltipla escolha</button></div>`).join('')+
+  `<button class="btn sec" onclick="edit(C=>C.sessoes.push({tema:'Novo tema',cor:COLORS[C.sessoes.length%COLORS.length],perguntas:[blankQ()]}),1)">+ Nova sessão</button>
+  <div class="card ed" style="margin-top:18px;border:2px solid ${L.cor}"><div class="edrow"><span class="sbadge" style="background:${L.cor}">📖 ${esc(L.tema)}</span><span class="muted" style="font-size:13px;font-weight:700">pessoais · sem opções · sem pontos</span></div>
+  <label>Cor</label>${colorRow(L.cor,'C.livro.cor')}
+  ${L.perguntas.map((q,i)=>`<div class="qed"><div class="edrow"><b>Pergunta ${i+1}</b><button class="x" onclick="delL(${i})">✕</button></div>
+  <textarea oninput="edit(C=>C.livro.perguntas[${i}].texto=this.value)">${esc(q.texto)}</textarea></div>`).join('')}
+  <button class="add" onclick="edit(C=>C.livro.perguntas.push({texto:'Nova pergunta pessoal'}),1)">+ Pergunta pessoal</button></div>`}
+
+function render(){
+  if(!H.C)return;
+  const seg=`<div class="seg"><button class="${H.panel==='jogo'?'on':''}" onclick="H.panel='jogo';render()">🎮 Conduzir jogo</button><button class="${H.panel==='editor'?'on':''}" onclick="H.panel='editor';render()">✏️ Temas e perguntas</button></div>`;
+  $('#app').innerHTML=seg+(H.panel==='editor'?editor():game());
+}
+</script>
+</body>
+</html>

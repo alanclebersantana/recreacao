@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#C1561A">
+<title>Recreação · Congregação Sul de Marialva</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="estilo.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="config.js"></script>
+<script src="comum.js"></script>
+</head>
+<body>
+<header>
+  <div class="cong">Congregação Sul de Marialva</div>
+  <div class="rec">Recreação</div>
+</header>
+<main id="app"><div class="wait"><span class="bounce">⏳</span><br>Conectando…</div></main>
+
+<script>
+function newPid(){const id='p'+Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);try{localStorage.setItem('rec_pid',id)}catch(e){}return id}
+let PID;try{PID=localStorage.getItem('rec_pid')}catch(e){}if(!PID)PID=newPid();
+const P={sala:{},jog:{},my:null,myRef:null,key:null,prevPhase:null,onlineSet:false,ready:false,connected:false};
+const G=()=>norm(P.sala.jogo);
+const it=()=>arr(P.sala.seq)[P.sala.step]||{};
+const meP=()=>P.jog[PID]&&P.jog[PID].nome?P.jog[PID]:null;
+
+initFirebase().then(()=>{
+  db.ref('.info/connected').on('value',s=>{P.connected=!!s.val();if(!P.connected)P.onlineSet=false;else syncOnline()});
+  ref('sala').on('value',s=>{P.sala=s.val()||{};onSala()});
+  ref('jogadores').on('value',s=>{P.jog=s.val()||{};P.ready=true;syncOnline();render()});
+  setInterval(loop,250);
+}).catch(showError);
+
+function syncOnline(){
+  const r=ref(`jogadores/${PID}/online`);
+  if(meP()&&P.connected&&!P.onlineSet){P.onlineSet=true;r.onDisconnect().set(false);r.set(true)}
+  else if(!meP()&&P.onlineSet){P.onlineSet=false;r.onDisconnect().cancel()}
+}
+function onSala(){
+  const k=P.sala.gameId+'_'+P.sala.step;
+  if(k!==P.key){P.key=k;P.my=null;if(P.myRef)P.myRef.off();P.myRef=null;
+    if(P.sala.gameId!=null&&P.sala.step!=null){
+      P.myRef=ref(`respostas/${P.sala.gameId}/${P.sala.step}/${PID}`);
+      P.myRef.on('value',s=>{P.my=s.val();render()})}}
+  if(P.sala.phase==='palmas'&&P.prevPhase!=='palmas'&&meP())clapSound();
+  P.prevPhase=P.sala.phase;
+  render();
+}
+function loop(){if(P.sala.aberta&&P.sala.phase==='pergunta')tickTimers(timeLeft(P.sala),P.sala.total)}
+
+function join(){
+  const n=($('#nm').value||'').trim().replace(/\s+/g,' ');
+  if(!n)return alert('Digite seu nome.');
+  try{localStorage.setItem('rec_nome',n)}catch(e){}
+  ref(`jogadores/${PID}`).set({nome:n,pts:0,online:true,entrou:firebase.database.ServerValue.TIMESTAMP}).then(syncOnline);
+}
+function answer(i){
+  if(P.sala.phase!=='pergunta'||P.my)return;
+  const rest=Math.max(0,(P.sala.endsAt||0)-now());if(rest<=0)return;
+  P.my={op:i,rest};render();
+  ref(`respostas/${P.sala.gameId}/${P.sala.step}/${PID}`).set({op:i,rest});
+}
+
+function chips(){const pl=playersList(P.jog).filter(p=>p.online);
+  return `<div class="chips">${pl.map(p=>`<span class="chip ${p.id===PID?'me':''}">${esc(p.nome)}</span>`).join('')}</div>`}
+function screen(){
+  if(!P.ready)return `<div class="wait"><span class="bounce">⏳</span><br>Conectando…</div>`;
+  if(!P.sala.aberta)return `<div class="card center"><div class="bounce">⏳</div><div class="big">A sala ainda não foi aberta</div><p class="muted" style="font-size:17px">Aguarde o anfitrião abrir a sala. Esta tela atualiza sozinha.</p></div>`;
+  const m=meP();
+  if(!m){let nome='';try{nome=localStorage.getItem('rec_nome')||''}catch(e){}
+    return `<div class="card center"><div style="font-size:52px">👋</div><div class="big">Bem-vindo(a)!</div><div class="lbl" style="margin-top:12px">Seu nome</div><input id="nm" class="field" placeholder="Ex.: Maria" maxlength="24" value="${esc(nome)}" onkeydown="if(event.key==='Enter')join()"><button class="btn" onclick="join()">Entrar no jogo</button></div>`}
+  const s=P.sala,g=G(),t=it(),q=qFrom(g,t),called=arr(s.called),fuiChamado=called.some(c=>c.pid===PID);
+  const pos=ranked(P.jog).findIndex(x=>x.id===PID)+1;
+  const bar=`<div class="mebar"><span>👤 ${esc(m.nome)}</span><span>⭐ ${+m.pts||0} pts</span></div>`;
+  const myOp=P.my?P.my.op:null;
+  if(['pergunta','resultado','selecao','chamados'].includes(s.phase)&&!q)return bar+`<div class="wait"><span class="bounce">⏳</span><br>Aguarde…</div>`;
+  switch(s.phase){
+  case'tema':return bar+themeHTML(g,t)+`<div class="wait">Prepare-se! ✨</div>`;
+  case'pergunta':return bar+metaBar(g,t)+qBoxHTML(q,timerHTML(timeLeft(s),s.total))+optsHTML(q,{mode:'part',my:myOp})+(myOp!=null?`<div class="wait">✅ Resposta enviada! Aguarde…</div>`:'');
+  case'resultado':{const gain=((s.resultado||{}).ganhos||{})[PID];let fb;
+    if(myOp==null)fb=`<div class="fb" style="background:#8a7d72"><div class="e">⏰</div><div class="t">Tempo esgotado</div><div class="s">Você não respondeu</div></div>`;
+    else if(myOp===q.certa)fb=`<div class="fb" style="background:#2f8a4c"><div class="e">🎉</div><div class="t">Acertou!</div><div class="s">+${gain||0} pontos</div></div>`;
+    else fb=`<div class="fb" style="background:#d1453b"><div class="e">😕</div><div class="t">Não foi dessa vez</div><div class="s">Resposta certa: ${esc(q.ops[q.certa])}</div></div>`;
+    return bar+fb+optsHTML(q,{mode:'result',my:myOp})+`<div class="wait">Você está em ${pos}º lugar</div>`}
+  case'livroTema':return bar+livroCardHTML(g)+`<div class="wait">Quem será que vai responder? 👀</div>`;
+  case'selecao':return bar+livroBannerHTML(g)+livroQHTML(q)+`<div class="wait"><span class="bounce">🎲</span><br>Quem vai responder? O anfitrião está escolhendo…</div>`;
+  case'chamados':return bar+livroBannerHTML(g)+livroQHTML(q)+namesHTML(called,PID)+`<div class="wait">${fuiChamado?'🎤 É você! Responda em voz alta':'👂 Ouça as respostas'}</div>`;
+  case'palmas':return bar+palmasHTML(called);
+  case'ranking':return bar+rankingHTML(P.jog,PID)+`<div class="wait">Você ficou em ${pos}º lugar 🎊</div>`;
+  default:return bar+`<div class="card center"><div class="big">✅ Você está na sala!</div><div class="wait"><span class="bounce">⏳</span><br>Aguardando o anfitrião iniciar o jogo…</div>${chips()}</div>`;
+  }}
+function render(){
+  const a=document.activeElement;
+  if(a&&a.id==='nm'&&P.sala.aberta&&!meP())return; // não apagar o nome enquanto digita
+  $('#app').innerHTML=screen();
+}
+</script>
+</body>
+</html>
